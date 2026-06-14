@@ -450,22 +450,6 @@ impl Keyboard for Enigo {
     fn raw(&mut self, keycode: u16, direction: Direction) -> InputResult<()> {
         debug!("\x1b[93mraw(keycode: {keycode:?}, direction: {direction:?})\x1b[0m");
 
-        // Strip system-residual modifiers from non-modifier keys to prevent
-        // AppleScript / other tools from polluting enigo events
-        let is_modifier = matches!(
-            keycode,
-            KeyCode::COMMAND
-                | KeyCode::RIGHT_COMMAND
-                | KeyCode::SHIFT
-                | KeyCode::RIGHT_SHIFT
-                | KeyCode::OPTION
-                | KeyCode::RIGHT_OPTION
-                | KeyCode::CONTROL
-                | KeyCode::RIGHT_CONTROL
-                | KeyCode::CAPS_LOCK
-                | KeyCode::FUNCTION
-        );
-
         if direction == Direction::Click || direction == Direction::Press {
             let event = CGEvent::new_keyboard_event(Some(&self.event_source), keycode, true)
                 .ok_or(InputError::Simulate(
@@ -478,11 +462,11 @@ impl Keyboard for Enigo {
                 self.event_source_user_data,
             );
             self.add_event_flag(keycode, Direction::Press);
-            let flags = if is_modifier {
-                self.event_flags
-            } else {
-                CGEventFlags::MaskNonCoalesced | CGEventFlags::from_bits_retain(0x2000_0000)
-            };
+            // Include enigo-managed modifier flags so chords like Cmd+Option+Arrow work.
+            // MaskNonCoalesced and the 0x2000_0000 flag are kept for event identity.
+            let flags = self.event_flags
+                | CGEventFlags::MaskNonCoalesced
+                | CGEventFlags::from_bits_retain(0x2000_0000);
             CGEvent::set_flags(Some(&event), flags);
             self.update_event_location(&event);
             CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&event));
@@ -501,11 +485,9 @@ impl Keyboard for Enigo {
                 self.event_source_user_data,
             );
             self.add_event_flag(keycode, Direction::Release);
-            let flags = if is_modifier {
-                self.event_flags
-            } else {
-                CGEventFlags::MaskNonCoalesced | CGEventFlags::from_bits_retain(0x2000_0000)
-            };
+            let flags = self.event_flags
+                | CGEventFlags::MaskNonCoalesced
+                | CGEventFlags::from_bits_retain(0x2000_0000);
             CGEvent::set_flags(Some(&event), flags);
             self.update_event_location(&event);
             CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&event));
