@@ -1279,7 +1279,11 @@ fn keycode_to_string(keycode: u16, modifier: u32, layout_data: &[u8]) -> Result<
     };
 
     if status != 0 {
-        error!("UCKeyTranslate failed with status: {status}");
+        // -25340 (errKCNoSuchKeyError / kUCKeyActionInvalid) is expected when
+        // scanning keycodes that do not produce a character with this modifier.
+        // Use debug! because get_layoutdependent_keycode tries many combinations
+        // and most of them are intentionally invalid for the current layout.
+        debug!("UCKeyTranslate failed with status: {status}");
         return Err(format!("OSStatus error: {status}"));
     }
 
