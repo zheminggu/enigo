@@ -13,8 +13,8 @@ use core_foundation::{
 };
 use core_graphics::{display::CGDisplay, event::KeyCode};
 use log::{debug, error, info};
-use objc2::rc::Retained;
 use objc2::MainThreadMarker;
+use objc2::rc::Retained;
 use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
 use objc2_core_foundation::{CFRetained, CGPoint};
 use objc2_core_graphics::{
@@ -1155,7 +1155,7 @@ fn try_from_key_to_cgkeycode(key: Key) -> Result<CGKeyCode, ()> {
 
 /// Run `f` on the main thread, waiting up to `timeout` for it to complete.
 /// If the current thread is already the main thread, `f` runs immediately.
-#[must_use]
+#[must_use = "The result of running code on the main thread should be used"]
 fn run_on_main_timeout<F, R>(f: F, timeout: Duration) -> Result<R, String>
 where
     F: Send + 'static + FnOnce(MainThreadMarker) -> R,
@@ -1177,20 +1177,18 @@ where
 }
 
 fn get_layoutdependent_keycode(string: &str) -> Option<CGKeyCode> {
-    let layout = match run_on_main_timeout(
-        |_| current_keyboard_layout(),
-        Duration::from_millis(500),
-    ) {
-        Ok(Ok(layout)) => layout,
-        Ok(Err(e)) => {
-            debug!("Failed to get keyboard layout: {}", e);
-            return None;
-        }
-        Err(e) => {
-            debug!("Unicode keycode layout lookup timed out: {}", e);
-            return None;
-        }
-    };
+    let layout =
+        match run_on_main_timeout(|_| current_keyboard_layout(), Duration::from_millis(500)) {
+            Ok(Ok(layout)) => layout,
+            Ok(Err(e)) => {
+                debug!("Failed to get keyboard layout: {e}");
+                return None;
+            }
+            Err(e) => {
+                debug!("Unicode keycode layout lookup timed out: {e}");
+                return None;
+            }
+        };
     let modifiers = [0x100, 0x20102]; // no modifiers, shift modifier (others: 0x80120 -> alt modifier, 0xa0122 -> alt + shift modifier)
 
     // loop through every possible keycode (0 - 127)
