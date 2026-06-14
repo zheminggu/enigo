@@ -181,3 +181,22 @@ fn unit_key_other_all_keycodes() {
         );
     }
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+// Injecting a Unicode key from a background thread used to crash because
+// enigo called TISGetInputSourceProperty off the main thread. Ensure it no
+// longer panics. The test requires Accessibility permissions.
+fn unicode_key_from_background_thread() {
+    use crate::{Direction::Click, Enigo, Key, Keyboard, Settings};
+    use std::thread;
+
+    thread::sleep(super::get_delay());
+    let mut enigo = Enigo::new(&Settings::default()).unwrap();
+
+    let handle = thread::spawn(move || {
+        enigo.key(Key::Unicode('/'), Click).unwrap();
+    });
+
+    handle.join().unwrap();
+}
