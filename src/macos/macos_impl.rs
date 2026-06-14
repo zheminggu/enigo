@@ -14,6 +14,7 @@ use core_foundation::{
 use core_graphics::{display::CGDisplay, event::KeyCode};
 use log::{debug, error, info};
 use objc2::rc::Retained;
+use objc2::MainThreadMarker;
 use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
 use objc2_core_foundation::{CFRetained, CGPoint};
 use objc2_core_graphics::{
@@ -97,8 +98,6 @@ pub struct Enigo {
                                             * determine double clicks and handle cases where
                                             * another button is clicked while the other one has
                                             * not yet been released */
-    has_run_loop: bool, /* main thread is running an event loop with dispatch_main,
-                         * UIApplicationMain, NSApplicationMain, CFRunLoop or similar */
     _phantom: std::marker::PhantomData<()>, /* Needed to fix compiler complaining about
                                              * unused lifetime
                                              * parameter */
@@ -423,7 +422,7 @@ impl Keyboard for Enigo {
                 self.special_keys(23, direction)?;
             }
             _ => {
-                let keycode = try_from_key_to_cgkeycode(key, self.has_run_loop).map_err(|()| {
+                let keycode = try_from_key_to_cgkeycode(key).map_err(|()| {
                     InputError::InvalidInput("virtual keycodes on macOS have to fit into u16")
                 })?;
 
@@ -482,8 +481,7 @@ impl Keyboard for Enigo {
             let flags = if is_modifier {
                 self.event_flags
             } else {
-                CGEventFlags::MaskNonCoalesced
-                    | CGEventFlags::from_bits_retain(0x2000_0000)
+                CGEventFlags::MaskNonCoalesced | CGEventFlags::from_bits_retain(0x2000_0000)
             };
             CGEvent::set_flags(Some(&event), flags);
             self.update_event_location(&event);
@@ -506,8 +504,7 @@ impl Keyboard for Enigo {
             let flags = if is_modifier {
                 self.event_flags
             } else {
-                CGEventFlags::MaskNonCoalesced
-                    | CGEventFlags::from_bits_retain(0x2000_0000)
+                CGEventFlags::MaskNonCoalesced | CGEventFlags::from_bits_retain(0x2000_0000)
             };
             CGEvent::set_flags(Some(&event), flags);
             self.update_event_location(&event);
@@ -546,12 +543,6 @@ impl Enigo {
             independent_of_keyboard_state,
             ..
         } = settings;
-
-        // Check if the dispatch2::run_on_main can be used
-        let (tx, rx) = std::sync::mpsc::channel();
-        dispatch2::DispatchQueue::main().exec_async(move || {
-            let _ = tx.send(());
-        });
 
         if !has_permission(*open_prompt_to_get_permissions) {
             error!("The application does not have the permission to simulate input!");
@@ -593,17 +584,6 @@ impl Enigo {
             Instant::now(),
         );
 
-        // Give it a small timeout
-        let has_run_loop = rx
-            .recv_timeout(std::time::Duration::from_millis(10))
-            .is_ok();
-
-        if has_run_loop {
-            debug!("Main-thread runloop seems alive.");
-        } else {
-            debug!("Probably no active main-thread runloop.");
-        }
-
         debug!("\x1b[93mconnection established on macOS\x1b[0m");
 
         Ok(Enigo {
@@ -617,7 +597,6 @@ impl Enigo {
             last_mouse_move,
             last_mouse_click: [(0, Instant::now()); 9],
             event_source_user_data: event_source_user_data.unwrap_or(crate::EVENT_MARKER as i64),
-            has_run_loop,
             _phantom: std::marker::PhantomData,
         })
     }
@@ -1082,7 +1061,7 @@ impl Enigo {
 }
 
 #[allow(clippy::too_many_lines)]
-fn try_from_key_to_cgkeycode(key: Key, has_run_loop: bool) -> Result<CGKeyCode, ()> {
+fn try_from_key_to_cgkeycode(key: Key) -> Result<CGKeyCode, ()> {
     // A list of names is available at:
     // https://docs.rs/core-graphics/latest/core_graphics/event/struct.KeyCode.html
     // https://github.com/phracker/MacOSX-SDKs/blob/master/MacOSX10.13.sdk/System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/HIToolbox.framework/Versions/A/Headers/Events.h
@@ -1151,7 +1130,7 @@ fn try_from_key_to_cgkeycode(key: Key, has_run_loop: bool) -> Result<CGKeyCode, 
         Key::VolumeDown => KeyCode::VOLUME_DOWN,
         Key::VolumeUp => KeyCode::VOLUME_UP,
         Key::VolumeMute => KeyCode::MUTE,
-        Key::Unicode(c) => get_layoutdependent_keycode(&c.to_string(), has_run_loop).ok_or(())?,
+        Key::Unicode(c) => get_layoutdependent_keycode(&c.to_string()).ok_or(())?,
         Key::Other(v) => u16::try_from(v).map_err(|_| ())?,
         Key::Super | Key::Command | Key::Windows | Key::Meta => KeyCode::COMMAND,
         Key::BrightnessDown
@@ -1174,12 +1153,33 @@ fn try_from_key_to_cgkeycode(key: Key, has_run_loop: bool) -> Result<CGKeyCode, 
     Ok(key)
 }
 
-fn get_layoutdependent_keycode(string: &str, has_run_loop: bool) -> Option<CGKeyCode> {
-    let layout = if has_run_loop {
-        dispatch2::run_on_main(|_| current_keyboard_layout())
-    } else {
-        current_keyboard_layout()
+fn run_on_main_timeout<F, R>(f: F, timeout: std::time::Duration) -> Result<R, String>
+where
+    F: Send + 'static + FnOnce(MainThreadMarker) -> R,
+    R: Send + 'static,
+{
+    if MainThreadMarker::new().is_some() {
+        // SAFETY: We just verified we are on the main thread.
+        return Ok(f(unsafe { MainThreadMarker::new_unchecked() }));
     }
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    dispatch2::DispatchQueue::main().exec_async(move || {
+        // SAFETY: This closure runs on the main dispatch queue.
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let _ = tx.send(f(mtm));
+    });
+
+    rx.recv_timeout(timeout)
+        .map_err(|_| format!("Timed out after {timeout:?} waiting for the main thread"))
+}
+
+fn get_layoutdependent_keycode(string: &str) -> Option<CGKeyCode> {
+    let layout = run_on_main_timeout(
+        |_| current_keyboard_layout(),
+        std::time::Duration::from_millis(500),
+    )
+    .and_then(|result| result)
     .ok()?;
     let modifiers = [0x100, 0x20102]; // no modifiers, shift modifier (others: 0x80120 -> alt modifier, 0xa0122 -> alt + shift modifier)
 
