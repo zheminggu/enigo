@@ -1153,14 +1153,16 @@ fn try_from_key_to_cgkeycode(key: Key) -> Result<CGKeyCode, ()> {
     Ok(key)
 }
 
-fn run_on_main_timeout<F, R>(f: F, timeout: std::time::Duration) -> Result<R, String>
+/// Run `f` on the main thread, waiting up to `timeout` for it to complete.
+/// If the current thread is already the main thread, `f` runs immediately.
+#[must_use]
+fn run_on_main_timeout<F, R>(f: F, timeout: Duration) -> Result<R, String>
 where
     F: Send + 'static + FnOnce(MainThreadMarker) -> R,
     R: Send + 'static,
 {
-    if MainThreadMarker::new().is_some() {
-        // SAFETY: We just verified we are on the main thread.
-        return Ok(f(unsafe { MainThreadMarker::new_unchecked() }));
+    if let Some(mtm) = MainThreadMarker::new() {
+        return Ok(f(mtm));
     }
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -1175,12 +1177,20 @@ where
 }
 
 fn get_layoutdependent_keycode(string: &str) -> Option<CGKeyCode> {
-    let layout = run_on_main_timeout(
+    let layout = match run_on_main_timeout(
         |_| current_keyboard_layout(),
-        std::time::Duration::from_millis(500),
-    )
-    .and_then(|result| result)
-    .ok()?;
+        Duration::from_millis(500),
+    ) {
+        Ok(Ok(layout)) => layout,
+        Ok(Err(e)) => {
+            debug!("Failed to get keyboard layout: {}", e);
+            return None;
+        }
+        Err(e) => {
+            debug!("Unicode keycode layout lookup timed out: {}", e);
+            return None;
+        }
+    };
     let modifiers = [0x100, 0x20102]; // no modifiers, shift modifier (others: 0x80120 -> alt modifier, 0xa0122 -> alt + shift modifier)
 
     // loop through every possible keycode (0 - 127)
