@@ -461,10 +461,12 @@ impl Keyboard for Enigo {
                 CGEventField::EventSourceUserData,
                 self.event_source_user_data,
             );
-            self.add_event_flag(keycode, Direction::Press);
+            let flag = self.add_event_flag(keycode, Direction::Press);
             // Include enigo-managed modifier flags so chords like Cmd+Option+Arrow work.
+            // For modifier presses, `self.event_flags` already contains the new flag.
             // MaskNonCoalesced and the 0x2000_0000 flag are kept for event identity.
             let flags = self.event_flags
+                | flag
                 | CGEventFlags::MaskNonCoalesced
                 | CGEventFlags::from_bits_retain(0x2000_0000);
             CGEvent::set_flags(Some(&event), flags);
@@ -484,8 +486,12 @@ impl Keyboard for Enigo {
                 CGEventField::EventSourceUserData,
                 self.event_source_user_data,
             );
-            self.add_event_flag(keycode, Direction::Release);
+            let flag = self.add_event_flag(keycode, Direction::Release);
+            // For modifier releases, `self.event_flags` has already had the flag removed.
+            // OR it back so macOS recognizes which modifier is being released and does
+            // not leave it stuck.
             let flags = self.event_flags
+                | flag
                 | CGEventFlags::MaskNonCoalesced
                 | CGEventFlags::from_bits_retain(0x2000_0000);
             CGEvent::set_flags(Some(&event), flags);
@@ -683,10 +689,11 @@ impl Enigo {
     // TODO: Remove this once the values for KeyCode were upstreamed: https://github.com/servo/core-foundation-rs/pull/712
     #[allow(clippy::match_same_arms)]
     #[allow(clippy::too_many_lines)]
-    /// Adds or removes `KeyFlags` as needed by the keycode
+    /// Adds or removes `KeyFlags` as needed by the keycode and returns the flag
+    /// that was applied.
     ///
     /// This function can never get called with `Direction::Click`!
-    fn add_event_flag(&mut self, keycode: CGKeyCode, direction: Direction) {
+    fn add_event_flag(&mut self, keycode: CGKeyCode, direction: Direction) -> CGEventFlags {
         // Upstream these to https://github.com/servo/core-foundation-rs
         const NX_DEVICELCTLKEYMASK: CGEventFlags = CGEventFlags::from_bits_retain(0x0000_0001);
         const NX_DEVICELSHIFTKEYMASK: CGEventFlags = CGEventFlags::from_bits_retain(0x0000_0002);
@@ -903,6 +910,7 @@ impl Enigo {
         };
 
         flag_fn(&mut self.event_flags, event_flag);
+        event_flag
     }
 
     fn scroll_unit(
